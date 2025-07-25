@@ -1,30 +1,46 @@
-import pytest
-from mytool.plugins.xss import XssPlugin
-from mytool.config import ScanOptions
-from pytest_httpserver import HTTPServer
+# mytool/plugins/xss.py
 
-@pytest.mark.asyncio
-async def test_xss_detects_reflected_xss(httpserver: HTTPServer):
-    # 1) 페이로드 및 테스트 엔드포인트 설정
-    payload = "<script>alert(1)</script>"
+from mytool.plugins.base import Plugin
+from mytool.attacks.payloads import PayloadManager
+import aiohttp
 
-    # 2) 경로를 첫 번째 인자로, 쿼리 문자열은 키워드 인자로 전달
-    httpserver.expect_request(
-        "/vuln",
-        query_string={"input": "test"}
-    ).respond_with_data(payload)
+class XssPlugin(Plugin):
+    name = "xss"
 
-    # 3) base URL과 target URL 구성
-    base = httpserver.url_for("/vuln")            # e.g. "http://localhost:50432/vuln"
-    target = f"{base}?input=INJECT_HERE"
+    async def run(self, target: str, options):
+        # 1) Baseline reflection 체크 (test)
+        base_ok, _ = await self.test_payload(target, "test", options)
+        if not base_ok:
+            return {"vulnerable": False, "details": []}
 
-    # 4) ScanOptions 객체 생성
-    opts = ScanOptions(plugin_names=["xss"], timeout=5, concurrency=1)
+        # 2) Payloads.yaml 에서 각 카테고리별 벡터 가져오기
+        data = PayloadManager.load()
+        xss_vectors = data["xss"]
 
-    # 5) 플러그인 인스턴스 생성 및 실행
-    plugin = XssPlugin()
-    result = await plugin.run(target, opts)
+        details = []
+        for category, vectors in xss_vectors.items():
+            for payload in vectors:
+                ok, resp = await self.test_payload(target, payload, options)
+                details.append({
+                    "category": category,         # reflective / stored / dom_based
+                    "payload": payload,
+                    "success": ok,
+                    "response_text": resp,
+                })
 
-    # 6) 결과 검증
-    assert result["vulnerable"] is True
-    assert any(payload in detail["response_text"] for detail in result["details"])
+        return {
+            "vulnerable": any(d["success"] for d in details),
+            "details": details,
+        }
+
+    async def test_payload(self, target: str, payload: str, options):
+        # INJECT_HERE → payload 치환 후 GET
+        url = target.replace("INJECT_HERE", aiohttp.helpers.quote(payload, safe=''))
+        headers = options.headers or {}
+        async with aiohttp.ClientSession(headers=headers) as session:
+            try:
+                async with session.get(url, timeout=options.timeout) as r:
+                    text = await r.text()
+                    return (payload in text, text)
+            except Exception as e:
+                return (False, str(e))

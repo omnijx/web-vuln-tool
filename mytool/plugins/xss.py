@@ -9,29 +9,26 @@ from urllib.parse import urljoin
 class XssPlugin(Plugin):
     name = "xss"
 
-    def __init__(self, options):
+    def __init__(self, options=None):
+        """
+        options=None을 허용하여 baseline/reflective 테스트를 지원합니다.
+        stored 테스트 시 options가 필요합니다.
+        """
         super().__init__()
         self.options = options
 
     async def run(self, target: str, options):
+        # 1) Baseline 반사형 체크: 'test'가 반영되지 않으면 취약하지 않음
+        base_ok, _ = await self.test_payload(target, "test", options)
+        if not base_ok:
+            return {"vulnerable": False, "details": []}
+
         details = []
 
-        # 1) Reflected baseline (간단 확인용)
-        base_ok, _ = await self.test_payload(target, "test", options)
-        details.append({
-            "category": "reflected_baseline",
-            "payload": "test",
-            "success": base_ok,
-            "response_text": "",
-        })
-        if not base_ok:
-            return {"vulnerable": False, "details": details}
+        # 페이로드 벡터 로드
+        vectors = PayloadManager.load().get("xss", {})
 
-        # 로드된 페이로드 벡터
-        data = PayloadManager.load()
-        vectors = data.get("xss", {})
-
-        # 2) Reflected XSS 전체 카테고리
+        # 2) Reflective XSS 검사
         for payload in vectors.get("reflective", []):
             ok, resp_text = await self.test_payload(target, payload, options)
             details.append({
@@ -41,23 +38,21 @@ class XssPlugin(Plugin):
                 "response_text": resp_text,
             })
 
-        # 3) Stored XSS
-        for payload in vectors.get("stored", []):
-            # POST로 저장
-            self.attack_stored(payload)
-            # GET으로 확인
-            html = self.fetch_page()
-            stored_ok = payload in html
-            details.append({
-                "category": "stored",
-                "payload": payload,
-                "success": stored_ok,
-                "response_text": html,
-            })
+        # 3) Stored XSS 검사 (options가 있을 때)
+        if self.options:
+            for payload in vectors.get("stored", []):
+                self.attack_stored(payload)
+                html = self.fetch_page()
+                stored_ok = payload in html
+                details.append({
+                    "category": "stored",
+                    "payload": payload,
+                    "success": stored_ok,
+                    "response_text": html,
+                })
 
-        # 4) DOM-based XSS
+        # 4) DOM-based XSS 검사
         for payload in vectors.get("dom_based", []):
-            # 해시(#) 뒤에 페이로드 붙이기
             url_with_hash = f"{target}#{aiohttp.helpers.quote(payload, safe='')}"
             ok, resp_text = await self.test_payload(url_with_hash, payload, options)
             details.append({
@@ -73,17 +68,19 @@ class XssPlugin(Plugin):
         }
 
     async def test_payload(self, target: str, payload: str, options):
-        # INJECT_HERE 구문은 reflective 테스트에서만 활용하세요
+        # 반사형 테스트는 INJECT_HERE 치환
         if "INJECT_HERE" in target:
             encoded = aiohttp.helpers.quote(payload, safe='')
             url = target.replace("INJECT_HERE", encoded)
         else:
             url = target
-        headers = options.headers or {}
+
+        headers = getattr(options, "headers", {}) or {}
+        timeout = getattr(options, "timeout", None)
 
         async with aiohttp.ClientSession(headers=headers) as session:
             try:
-                async with session.get(url, timeout=options.timeout) as resp:
+                async with session.get(url, timeout=timeout) as resp:
                     text = await resp.text()
                     return (payload in text, text)
             except Exception as e:

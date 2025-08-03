@@ -5,30 +5,25 @@ from mytool.attacks.payloads import PayloadManager
 import aiohttp
 import requests
 from urllib.parse import urljoin
+from bs4 import BeautifulSoup
 
 class XssPlugin(Plugin):
     name = "xss"
 
     def __init__(self, options=None):
-        """
-        options=None을 허용하여 baseline/reflective 테스트를 지원합니다.
-        stored 테스트 시 options가 필요합니다.
-        """
         super().__init__()
         self.options = options
 
     async def run(self, target: str, options):
-        # 1) Baseline 반사형 체크: 'test'가 반영되지 않으면 취약하지 않음
+        # 1) Baseline 반사형 검사
         base_ok, _ = await self.test_payload(target, "test", options)
         if not base_ok:
             return {"vulnerable": False, "details": []}
 
         details = []
-
-        # 페이로드 벡터 로드
         vectors = PayloadManager.load().get("xss", {})
 
-        # 2) Reflective XSS 검사
+        # 2) Reflective XSS
         for payload in vectors.get("reflective", []):
             ok, resp_text = await self.test_payload(target, payload, options)
             details.append({
@@ -38,12 +33,12 @@ class XssPlugin(Plugin):
                 "response_text": resp_text,
             })
 
-        # 3) Stored XSS 검사 (options가 있을 때)
+        # 3) Stored XSS
         if self.options:
             for payload in vectors.get("stored", []):
                 self.attack_stored(payload)
                 html = self.fetch_page()
-                stored_ok = payload in html
+                stored_ok = self._detect_xss(html, payload)
                 details.append({
                     "category": "stored",
                     "payload": payload,
@@ -51,7 +46,7 @@ class XssPlugin(Plugin):
                     "response_text": html,
                 })
 
-        # 4) DOM-based XSS 검사
+        # 4) DOM-based XSS
         for payload in vectors.get("dom_based", []):
             url_with_hash = f"{target}#{aiohttp.helpers.quote(payload, safe='')}"
             ok, resp_text = await self.test_payload(url_with_hash, payload, options)
@@ -68,7 +63,7 @@ class XssPlugin(Plugin):
         }
 
     async def test_payload(self, target: str, payload: str, options):
-        # 반사형 테스트는 INJECT_HERE 치환
+        # INJECT_HERE 치환 (reflective)
         if "INJECT_HERE" in target:
             encoded = aiohttp.helpers.quote(payload, safe='')
             url = target.replace("INJECT_HERE", encoded)
@@ -82,7 +77,8 @@ class XssPlugin(Plugin):
             try:
                 async with session.get(url, timeout=timeout) as resp:
                     text = await resp.text()
-                    return (payload in text, text)
+                    detected = self._detect_xss(text, payload)
+                    return (detected, text)
             except Exception as e:
                 return (False, str(e))
 
@@ -96,3 +92,26 @@ class XssPlugin(Plugin):
         resp = requests.get(view_url, timeout=self.options.timeout)
         resp.raise_for_status()
         return resp.text
+
+    def _detect_xss(self, html: str, payload: str) -> bool:
+        """
+        BeautifulSoup 기반으로 HTML을 파싱하여
+        <script> 태그 내, 속성 값, 이벤트 핸들러 등에
+        페이로드가 삽입됐는지 정확히 검사.
+        """
+        soup = BeautifulSoup(html, "html.parser")
+
+        # 1) <script> 태그 내부 텍스트 검사
+        for script in soup.find_all("script"):
+            if payload in script.get_text():
+                return True
+
+        # 2) 모든 태그의 속성 값 검사
+        for tag in soup.find_all():
+            for attr_val in tag.attrs.values():
+                vals = attr_val if isinstance(attr_val, (list, tuple)) else [attr_val]
+                for v in vals:
+                    if v and payload in v:
+                        return True
+
+        return False

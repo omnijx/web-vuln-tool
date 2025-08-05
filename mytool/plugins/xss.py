@@ -15,7 +15,7 @@ class XssPlugin(Plugin):
         self.options = options
 
     async def run(self, target: str, options):
-        # 1) Baseline 반사형 검사
+        # 1) Baseline 반사형 검사 .
         base_ok, _ = await self.test_payload(target, "test", options)
         if not base_ok:
             return {"vulnerable": False, "details": []}

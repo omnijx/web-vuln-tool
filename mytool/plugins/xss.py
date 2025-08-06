@@ -15,7 +15,7 @@ class XssPlugin(Plugin):
         self.options = options
 
     async def run(self, target: str, options):
-        # 1) Baseline 반사형 검사 .
+        # 1) Baseline 검사
         base_ok, _ = await self.test_payload(target, "test", options)
         if not base_ok:
             return {"vulnerable": False, "details": []}
@@ -63,7 +63,6 @@ class XssPlugin(Plugin):
         }
 
     async def test_payload(self, target: str, payload: str, options):
-        # INJECT_HERE 치환 (reflective)
         if "INJECT_HERE" in target:
             encoded = aiohttp.helpers.quote(payload, safe='')
             url = target.replace("INJECT_HERE", encoded)
@@ -78,9 +77,9 @@ class XssPlugin(Plugin):
                 async with session.get(url, timeout=timeout) as resp:
                     text = await resp.text()
                     detected = self._detect_xss(text, payload)
-                    return (detected, text)
+                    return detected, text
             except Exception as e:
-                return (False, str(e))
+                return False, str(e)
 
     def attack_stored(self, payload: str):
         submit_url = urljoin(self.options.target, "/submit")
@@ -94,24 +93,20 @@ class XssPlugin(Plugin):
         return resp.text
 
     def _detect_xss(self, html: str, payload: str) -> bool:
-        """
-        BeautifulSoup 기반으로 HTML을 파싱하여
-        <script> 태그 내, 속성 값, 이벤트 핸들러 등에
-        페이로드가 삽입됐는지 정확히 검사.
-        """
-        soup = BeautifulSoup(html, "html.parser")
+        # 원시 HTML에서 우선 검사
+        if payload in html:
+            return True
 
-        # 1) <script> 태그 내부 텍스트 검사
+        soup = BeautifulSoup(html, "html.parser")
+        # <script> 태그 내부
         for script in soup.find_all("script"):
             if payload in script.get_text():
                 return True
-
-        # 2) 모든 태그의 속성 값 검사
+        # 모든 태그 속성값
         for tag in soup.find_all():
             for attr_val in tag.attrs.values():
                 vals = attr_val if isinstance(attr_val, (list, tuple)) else [attr_val]
                 for v in vals:
                     if v and payload in v:
                         return True
-
         return False

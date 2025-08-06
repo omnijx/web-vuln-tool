@@ -11,6 +11,8 @@ class ScanOptions(BaseSettings):
     timeout: int = 10
     concurrency: int = 5
     headers: Optional[Dict[str, str]] = None
+    verbose: bool = False    # 추가된 옵션
+    retries: int = 2 
 
     class Config:
         # .env 파일이 있으면 읽어서 환경변수로 사용할 수 있어요
